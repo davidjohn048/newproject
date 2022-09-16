@@ -1,0 +1,508 @@
+# yamllint disable
+---
+# yamllint enable
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Module-A-VPC"
+
+######################################################################
+#  This template contains parameters and resources for creating a
+#  a three layered, three zone Network Infrastructure in AWS within a VPC.
+#  (Public Subnet for front end, Private Subnet for Applications,
+#  Private Subnet for Databases)
+#
+#  List of resources created:
+#                           1. VPC
+#                           2. Public Subnet
+#                           3. Private Subnet
+#                           4. Internet Gateway
+#                           5. Elastic IP (2 zones)
+#                           6. NAT Gateway (2 zones)
+#                           7. Route Tables
+#                           8. Routes
+#                           9. Parameter store parameters
+#
+# Implementation resources
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-vpc.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-subnet.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-natgateway.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-eip.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-internetgateway.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-route-table.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-subnet-route-table-assoc.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ssm-parameter.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/intrinsic-function-reference.html
+#
+######################################################################
+
+Parameters:
+    # yamllint disable
+  VpcName:  # Parameters name of VPC
+    Type: String
+    Default: "Team3VPC"
+
+  VpcCidr:  # CIDR Range for VPC subnet range
+    Type: String
+    Default: "10.0.0.0/16"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+
+  PublicSubnetACidr:  # CIDR Range in first zone (named as PublicSubnetACidr)
+    Type: String
+    Default: "10.0.8.0/24"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+
+  PublicSubnetBCidr:  # CIDR Range in second zone (named as PublicSubnetBCidr)
+    Type: String
+    Default: "10.0.12.0/24"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+
+  PublicSubnetCCidr:  # CIDR Range in third zone (named as PublicSubnetCCidr)
+    Type: String
+    Default: "10.0.16.0/24"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+
+  PrivateSubnetApplicationACidr:  # CIDR Range in first zone for application
+    Type: String
+    Default: "10.0.24.0/23"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+
+  PrivateSubnetApplicationBCidr:  # CIDR Range in second zone for applicaiton
+    Type: String
+    Default: "10.0.32.0/23"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+
+  PrivateSubnetApplicationCCidr:  # CIDR Range in yhird zone for applicaiton
+    Type: String
+    Default: "10.0.40.0/23"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+
+  PrivateSubnetDatabaseACidr:   # CIDR Range in first zone for database
+    Type: String
+    Default: "10.0.48.0/23"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+
+  PrivateSubnetDatabaseBCidr:   # CIDR Range in second zone for database
+    Type: String
+    Default: "10.0.56.0/23"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+
+  PrivateSubnetDatabaseCCidr:   # CIDR Range in third zone for database
+    Type: String
+    Default: "10.0.64.0/23"
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+    # yamllint enable
+######################################################################
+# Resource creation
+######################################################################
+Resources:
+  Team3VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      Tags:
+        - Key: Name
+          Value: !Ref VpcName
+
+  ######################################################################
+  # Public Subnets
+  ######################################################################
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref PublicSubnetACidr
+      VpcId: !Ref Team3VPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: PublicSubetA
+
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref PublicSubnetBCidr
+      VpcId: !Ref Team3VPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: PublicSubnetB
+
+  PublicSubnetC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref PublicSubnetCCidr
+      VpcId: !Ref Team3VPC
+      AvailabilityZone: !Select [2, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: PublicSubnetC
+
+  ######################################################################
+  # Private Application Subnets
+  ######################################################################
+
+  PrivateSubnetApplicationA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref PrivateSubnetApplicationACidr
+      VpcId: !Ref Team3VPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: PrivateAppSubnetA
+
+  PrivateSubnetApplicationB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref PrivateSubnetApplicationBCidr
+      VpcId: !Ref Team3VPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: PrivateAppSubnetB
+
+  PrivateSubnetApplicationC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref PrivateSubnetApplicationCCidr
+      VpcId: !Ref Team3VPC
+      AvailabilityZone: !Select [2, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: PrivateAppSubnetC
+
+  PrivateSubnetDatabaseA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref PrivateSubnetDatabaseACidr
+      VpcId: !Ref Team3VPC
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: PrivateDataSubnetA
+
+  PrivateSubnetDatabaseB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref PrivateSubnetDatabaseBCidr
+      VpcId: !Ref Team3VPC
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: PrivateDataSubnetB
+
+  PrivateSubnetDatabaseC:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref PrivateSubnetDatabaseCCidr
+      VpcId: !Ref Team3VPC
+      AvailabilityZone: !Select [2, !GetAZs ""]
+      Tags:
+        - Key: Name
+          Value: PrivateDataSubnetC
+
+  ######################################################################
+  # Internet Gateway
+  ######################################################################
+  Team3InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: InternetGatewayT3
+
+  InternetGatewayToVPC:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Team3VPC
+      InternetGatewayId: !Ref Team3InternetGateway
+
+  ######################################################################
+  # Elastic IP's & NatGateways
+  ######################################################################
+  NatGatewayPublicIpAddressA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt [ElasticIPAddress1, AllocationId]
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Name
+          Value: NATGateway1
+
+  ElasticIPAddress1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: !Ref Team3VPC
+
+  NatGatewayPublicIpAddressB:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt [ElasticIPAddress2, AllocationId]
+      SubnetId: !Ref PublicSubnetB
+      Tags:
+        - Key: Name
+          Value: NATGateway2
+
+  ElasticIPAddress2:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: !Ref Team3VPC
+
+  ######################################################################
+  # Route Tables
+  ######################################################################
+
+  PublicRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Team3VPC
+
+
+  PublicRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Team3VPC
+
+
+  PublicRouteTableC:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Team3VPC
+
+
+  PrivateRouteTableApplicationA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Team3VPC
+
+  PrivateRouteTableApplicationB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Team3VPC
+
+
+  PrivateRouteTableApplicationC:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Team3VPC
+
+
+  PrivateRouteTableDatabaseA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Team3VPC
+
+
+  PrivateRouteTableDatabaseB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Team3VPC
+
+  PrivateRouteTableDatabaseC:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Team3VPC
+
+
+  ######################################################################
+  # Route Tables to Subnet Association
+  ######################################################################
+
+  PublicRouteTableToPublicSubnetA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTableA
+      SubnetId: !Ref PublicSubnetA
+
+  PublicRouteTableToPublicSubnetB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTableB
+      SubnetId: !Ref PublicSubnetB
+
+  PublicRouteTableToPublicSubnetC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTableC
+      SubnetId: !Ref PublicSubnetC
+
+  PrivateRouteTableApplicationAToPrivateSubnetApplicationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableApplicationA
+      SubnetId: !Ref PrivateSubnetApplicationA
+
+  PrivateRouteTableApplicationBToPrivateSubnetApplicationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableApplicationB
+      SubnetId: !Ref PrivateSubnetApplicationB
+
+  PrivateRouteTableApplicationBToPrivateSubnetApplicationC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableApplicationC
+      SubnetId: !Ref PrivateSubnetApplicationC
+
+  PrivateRouteTableDatabaseAToPrivateSubnetDatabaseA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableDatabaseA
+      SubnetId: !Ref PrivateSubnetDatabaseA
+
+  PrivateRouteTableDatabaseBToPrivateSubnetDatabaseB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableDatabaseB
+      SubnetId: !Ref PrivateSubnetDatabaseB
+
+  PrivateRouteTableDatabaseBToPrivateSubnetDatabaseC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableDatabaseC
+      SubnetId: !Ref PrivateSubnetDatabaseC
+
+  ######################################################################
+  # Routes
+  ######################################################################
+
+  RouteToInternetPublicA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref Team3InternetGateway
+
+  RouteToInternetPublicB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref Team3InternetGateway
+
+
+  RouteToInternetPublicC:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTableC
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref Team3InternetGateway
+
+
+  RouteToInternetApplicationA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableApplicationA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayPublicIpAddressA
+
+
+  RouteToInternetApplicationB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableApplicationB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayPublicIpAddressB
+
+  RouteToInternetDatabaseA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableDatabaseA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayPublicIpAddressA
+
+  RouteToInternetDatabaseB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableDatabaseB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayPublicIpAddressB
+
+  ######################################################################
+  # Outputs of some key resource created above
+  ######################################################################
+
+  VPCId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/vpc/id"
+      Type: "String"
+      Description: VPC Id
+      Value: !Ref Team3VPC
+
+  PublicSubnetAId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/vpc/subnet/public/a/id"
+      Type: "String"
+      Description: PublicSubnetA Id
+      Value: !Ref PublicSubnetA
+
+  PublicSubnetBId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/vpc/subnet/public/b/id"
+      Type: "String"
+      Description: PublicSubnetB Id
+      Value: !Ref PublicSubnetB
+
+  PublicSubnetCId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/vpc/subnet/public/c/id"
+      Type: "String"
+      Description: PublicSubnetC Id
+      Value: !Ref PublicSubnetC
+
+  PrivateSubnetApplicationAId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/vpc/subnet/privateapp/a/id"
+      Type: "String"
+      Description: PrivateSubnetApplicationA Id
+      Value: !Ref PrivateSubnetApplicationA
+
+  PrivateSubnetApplicationBId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/vpc/subnet/privateapp/b/id"
+      Type: "String"
+      Description: PrivateSubnetApplicationB Id
+      Value: !Ref PrivateSubnetApplicationB
+
+  PrivateSubnetApplicationCId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/vpc/subnet/privateapp/c/id"
+      Type: "String"
+      Description: PrivateSubnetApplicationC Id
+      Value: !Ref PrivateSubnetApplicationC
+
+  PrivateSubnetDatabaseAId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/vpc/subnet/privatedata/a/id"
+      Type: "String"
+      Description: PrivateSubnetDatabaseA Id
+      Value: !Ref PrivateSubnetDatabaseA
+
+  PrivateSubnetDatabaseBId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/vpc/subnet/privatedata/b/id"
+      Type: "String"
+      Description: PrivateSubnetDatabaseB Id
+      Value: !Ref PrivateSubnetDatabaseB
+
+  PrivateSubnetDatabaseCId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/vpc/subnet/privatedata/c/id"
+      Type: "String"
+      Description: PrivateSubnetDatabaseC Id
+      Value: !Ref PrivateSubnetDatabaseC
+Outputs:
+  VPC:
+    Value: !Ref Team3VPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VPCId"

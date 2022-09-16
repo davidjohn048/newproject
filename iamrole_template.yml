@@ -1,0 +1,104 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Module-B-IAM Roles"
+
+######################################################################
+# This template contains parameters and resources for creating an instance role.
+# The role should be the standard EC2 role with additional managed policies of
+# AmazonSSMManagedInstanceCore and S3FullAcess. Optional to do a custom policy
+# that gives access to only the bucket defined with a parameter.
+#
+#  List of resources created:
+#                           1. Role
+#                           2. Instance Profile
+#                           3. Instance Profile parameter
+#
+# Implementation resources
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iam-role.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iam-instanceprofile.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ssm-parameter.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/intrinsic-function-reference.html
+#
+######################################################################
+
+
+Parameters:
+
+  EC2Profile:
+    Type: String
+  # Optional
+  S3BucketName:
+    Type: String
+
+
+Resources:
+  # Creating a role
+  Team3Role:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        # Allow CloudWatch Agent to run on servers
+        - arn:aws-us-gov:iam::aws:policy/CloudWatchAgentServerPolicy
+        # Allow SSM Agent Access to CloudWatch
+        - arn:aws-us-gov:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+        # Allow instance to read SSM parameters
+        - arn:aws-us-gov:iam::aws:policy/AmazonSSMReadOnlyAccess
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListAllMyBuckets
+                  - s3:ListBucket
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Join
+                  - ''
+                  - - 'arn:aws:s3:::'
+                    - !Ref S3BucketName
+        - PolicyName: CloudwatchAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'cloudwatch:PutMetricData'
+                Resource: arn:aws:cloudwatch:*:*:*
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:DescribeLogGroups'
+                  - 'logs:DescribeLogStreams'
+                  - 'logs:PutLogEvents'
+                Resource: arn:aws:logs:*:*:*
+  # Creating a profile for EC2
+  Team3InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      InstanceProfileName: !Ref EC2Profile
+      Roles:
+        - !Ref Team3Role
+
+  InstanceProfileParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: "/instancerole/id"
+      Type: "String"
+      Description: instance Role Id
+      Value: !Ref Team3InstanceProfile

@@ -1,0 +1,71 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Module-C-S3Bucket"
+
+Parameters:
+
+  BucketName:
+    Type: String
+
+  Encryption:
+    Type: String
+    AllowedValues:
+      - 'enabled'
+      - 'disabled'
+
+  PublicAccess:
+    Type: String
+    AllowedValues:
+      - 'enabled'
+      - 'disabled'
+
+  Versioning:
+    Type: String
+    AllowedValues:
+      - 'enabled'
+      - 'disabled'
+
+Conditions:
+
+  IsEncrypted:
+    !Equals [!Ref Encryption, 'enabled']
+
+  IsPublic:
+    !Equals [!Ref PublicAccess, 'enabled']
+
+  IsVersioning:
+    !Equals [!Ref Versioning, 'enabled']
+
+Resources:
+
+  # S3 BUCKET
+  S3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref BucketName
+      BucketEncryption: !If
+        - IsEncrypted
+        - ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        - AWS::NoValue
+      PublicAccessBlockConfiguration: !If
+        - IsPublic
+        - BlockPublicAcls: false
+          BlockPublicPolicy: false
+          IgnorePublicAcls: false
+          RestrictPublicBuckets: false
+        - AWS::NoValue
+      VersioningConfiguration: !If
+        - IsVersioning
+        - Status: Enabled
+        - AWS::NoValue
+      Tags:
+        - Key: name
+          Value: !Ref BucketName
+
+Outputs:
+  S3Bucket:
+    Value: !Ref S3Bucket
+    Export:
+      Name: !Ref BucketName

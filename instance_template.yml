@@ -1,0 +1,785 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Module-D-LaunchTemplate-AutoScalingGroup-ApplicationLoadBalancer"
+
+######################################################################
+#  This template contains parameters and resources for creating Multi-AZ ASG
+#  and Launch Template, Scaling Policies, Alarms and Life Cycle Hooks for ASG.
+#  Application Load Balancer and Listener and Target Group for the ALB
+#  Security Gp for both ALB and ASG, DNS entry for ALB and SNS topic for ASG.
+#
+#
+#  List of resources created:
+#                           1. Load Balancer Security Grouo
+#                           2. Instance Security Group
+#                           3. Launch template
+#                           4. Application Load Balancer
+#                           5. Application Load Balancer Target Group
+#                           6. Application Load Balancer Listener
+#                           7. Auto Scaling Group
+#                           8. Scaling policies for Auto Scaling Group
+#                           9. Alarms for Auto Scaling Group
+#                           10. SNS topic for receiving scaling actions
+#                           11. Lifecycle hooks for scaling actions
+#                           12. DNS entry pointing to ALB
+#
+#
+# Implementation resources
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-security-group.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-launchtemplate.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticloadbalancingv2-loadbalancer.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticloadbalancingv2-targetgroup.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticloadbalancingv2-listener.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-as-group.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-as-policy.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-cw-alarm.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53-recordsetgroup.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-sns-topic.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-autoscaling-lifecyclehook.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/intrinsic-function-reference.html
+#
+######################################################################
+
+Parameters:
+
+  SSLCertificateARN:
+    Type: String
+
+  InstanceType:
+    Description: Amazon EC2 Instance Type
+    Type: String
+    Default: t3.medium
+    AllowedValues:
+      - t3.small
+      - t3.medium
+
+  MinInstances:
+    Type: String
+    Description: Minimum instances required
+    Default: 2
+
+  MaxInstances:
+    Type: String
+    Description: Maximum instances required
+    Default: 10
+
+  DesiredInstances:
+    Type: String
+    Description: Number of Desired Instances
+    Default: 2
+
+  AMI:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
+  LogsRetentionInDays:
+    # yamllint disable
+    Description: 'Specifies the number of days you want to retain log events in the specified log group.'
+    # yamllint enable
+    Type: Number
+    Default: 14
+    # yamllint disable
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1827, 3653]
+    # yamllint enable
+
+Resources:
+
+  #########################################################################
+  # Security groups
+  #########################################################################
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Load Balancer
+      GroupName: LoadBalancerSecurityGroup
+      VpcId: '{{resolve:ssm:/vpc/id}}'   # not Team3VPC
+      Tags:
+        - Key: Name
+          Value: LoadBalancerSecurityGroup
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Instance Secuirty group
+      VpcId: '{{resolve:ssm:/vpc/id}}'
+      Tags:
+        - Key: Name
+          Value: EC2InstanceSecurityGroup
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+
+  #########################################################################
+  # Launch Template Configuration
+  #########################################################################
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          setup:
+            - "1InstallWeb"
+            - "2ConfigCWAgent"
+        1InstallWeb:
+          # install httpd and amazon-cloudwatch-agent using yum
+          packages:
+            yum:
+              httpd: []
+              amazon-cloudwatch-agent: []
+          # make sure https run on reboot
+          services:
+            sysvinit:
+              httpd:
+                enabled: true
+                ensureRunning: true
+          # download the contents of the S3 bucket (even if empty)
+          commands:
+            CreateFile:
+              command: 'touch /var/www/html/index.html'
+            changechmod:
+              command: 'chmod 755 /var/www/html/index.html'
+            Createhtml:
+              # yamllint disable
+              command: 'echo Hello World from $(curl http://169.254.169.254/latest/meta-data/instance-id) at $(curl http://169.254.169.254/latest/meta-data/placement/availability-zone) > /var/www/html/index.html'
+              # yamllint enable
+
+  # yamllint disable
+        2ConfigCWAgent:
+          # config cloudwatch
+          packages:
+            yum:
+              amazon-cloudwatch-agent: []
+          files:
+            /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json:
+              content: |
+                {
+                  "agent": {
+                    "metrics_collection_interval": 10,
+                    "logfile": "/opt/aws/amazon-cloudwatch-agent/logs/amazon-cloudwatch-agent.log"
+                  },
+                  "metrics": {
+                    "metrics_collected": {
+                      "cpu": {
+                        "resources": [
+                          "*"
+                        ],
+                        "measurement": [
+                          {"name": "cpu_usage_idle", "rename": "CPU_USAGE_IDLE", "unit": "Percent"},
+                          {"name": "cpu_usage_nice", "unit": "Percent"},
+                          "cpu_usage_guest"
+                        ],
+                        "totalcpu": false,
+                        "metrics_collection_interval": 10,
+                        "append_dimensions": {
+                          "customized_dimension_key_1": "customized_dimension_value_1",
+                          "customized_dimension_key_2": "customized_dimension_value_2"
+                        }
+                      },
+                      "disk": {
+                        "resources": [
+                          "/",
+                          "/tmp"
+                        ],
+                        "measurement": [
+                          {"name": "free", "rename": "DISK_FREE", "unit": "Gigabytes"},
+                          "total",
+                          "used"
+                        ],
+                        "ignore_file_system_types": [
+                          "sysfs", "devtmpfs"
+                        ],
+                        "metrics_collection_interval": 60,
+                        "append_dimensions": {
+                          "customized_dimension_key_3": "customized_dimension_value_3",
+                          "customized_dimension_key_4": "customized_dimension_value_4"
+                        }
+                      },
+                      "diskio": {
+                        "resources": [
+                          "*"
+                        ],
+                        "measurement": [
+                          "reads",
+                          "writes",
+                          "read_time",
+                          "write_time",
+                          "io_time"
+                        ],
+                        "metrics_collection_interval": 60
+                      },
+                      "swap": {
+                        "measurement": [
+                          "swap_used",
+                          "swap_free",
+                          "swap_used_percent"
+                        ]
+                      },
+                      "mem": {
+                        "measurement": [
+                          "mem_used",
+                          "mem_cached",
+                          "mem_total"
+                        ],
+                        "metrics_collection_interval": 10
+                      },
+                      "net": {
+                        "resources": [
+                          "eth0"
+                        ],
+                        "measurement": [
+                          "bytes_sent",
+                          "bytes_recv",
+                          "drop_in",
+                          "drop_out"
+                        ]
+                      },
+                      "netstat": {
+                        "measurement": [
+                          "tcp_established",
+                          "tcp_syn_sent",
+                          "tcp_close"
+                        ],
+                        "metrics_collection_interval": 60
+                      },
+                      "processes": {
+                        "measurement": [
+                          "running",
+                          "sleeping",
+                          "dead"
+                        ]
+                      }
+                    },
+                  },
+                  "logs": {
+                    "logs_collected": {
+                      "files": {
+                        "collect_list": [
+                          {
+                            "file_path": "/opt/aws/amazon-cloudwatch-agent/logs/amazon-cloudwatch-agent.log",
+                            "log_group_name": "/ec2/CloudWatchAgentLog/",
+                            "log_stream_name": "{instance_id}_{hostname}",
+                            "timezone": "Local"
+                          },
+                          {
+                            "file_path": "/var/log/messages",
+                            "log_group_name":  "/ec2/var/log/messages",
+                            "log_stream_name": "{instance_id}_{hostname}",
+                            "timezone": "Local"
+                          },
+                          {
+                            "file_path": "/var/log/secure",
+                            "log_group_name":  "/ec2/var/log/secure",
+                            "log_stream_name": "{instance_id}_{hostname}",
+                            "timezone": "Local"
+                          },
+                          {
+                            "file_path": "/var/log/yum.log",
+                            "log_group_name":  "/ec2/var/log/yum",
+                            "log_stream_name": "{instance_id}_{hostname}",
+                            "timezone": "Local"
+                          }
+                        ]
+                      }
+                    },
+                "log_stream_name": "/ec2/catchall"
+                  }
+                }
+# yamllint enable
+          services:
+            systemd:
+              amazon-cloudwatch-agent:
+                enabled: "true"
+                ensureRunning: "true"
+    Properties:
+      LaunchTemplateName: LaunchTemplate
+      LaunchTemplateData:
+        InstanceType: !Ref InstanceType
+        ImageId: !Ref AMI
+        IamInstanceProfile:
+          Name: '{{resolve:ssm:/instancerole/id}}'
+        SecurityGroupIds:
+          - !Ref InstanceSecurityGroup
+# yamllint disable
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            sudo yum update -y
+            sudo yum install -y httpd
+            sudo systemctl start httpd
+            sudo systemctl enable httpd
+            /opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --region ${AWS::Region} --resource LaunchTemplate --configsets setup
+
+            # download and install cloudwatch agent
+            wget https://s3.amazonaws.com/amazoncloudwatch-agent/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm
+            yum -y install amazon-cloudwatch-agent.rpm
+            mv /etc/amazon/amazon-cloudwatch-agent.json /etc/amazon/amazon-cloudwatch-agent/amazon-cloudwatch-agent.json
+            sudo systemctl enable amazon-cloudwatch-agent
+            sudo systemctl start amazon-cloudwatch-agent
+# yamllint enable
+
+  #########################################################################
+  # Load Balancer Configuration
+  #########################################################################
+  AppElasticLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: AppLoadBalancer
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - '{{resolve:ssm:/vpc/subnet/public/a/id}}'
+        - '{{resolve:ssm:/vpc/subnet/public/b/id}}'
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      IpAddressType: ipv4
+
+  AppELBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 15
+      HealthyThresholdCount: 5
+      HealthCheckPath: /  # added this
+      Matcher:
+        HttpCode: '200'
+      Name: AppELBTargetGroup
+      Port: 80  # not 443
+      # not https
+      Protocol: HTTP
+      VpcId: '{{resolve:ssm:/vpc/id}}'
+
+  AppELBListener443:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref AppElasticLoadBalancer
+      Certificates:
+        - CertificateArn: !Ref SSLCertificateARN
+      Port: 443
+      Protocol: HTTPS
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref AppELBTargetGroup
+
+  ########################################################################
+  # Auto Scaling Group and Scaling Policy
+  ########################################################################
+  AppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        # notDefault
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MaxSize: !Ref MaxInstances
+      MinSize: !Ref MinInstances
+      DesiredCapacity: !Ref DesiredInstances
+      VPCZoneIdentifier:
+        - '{{resolve:ssm:/vpc/subnet/privateapp/a/id}}'
+        - '{{resolve:ssm:/vpc/subnet/privateapp/b/id}}'
+      TargetGroupARNs:
+        - !Ref AppELBTargetGroup
+
+  AppStepUpScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      Cooldown: '60'
+      ScalingAdjustment: 1
+
+  AppStepDownScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AdjustmentType: ChangeInCapacity
+      AutoScalingGroupName: !Ref AppAutoScalingGroup
+      Cooldown: '60'
+      ScalingAdjustment: -1
+  # #######################################################################
+  # # ASG Lifecycle hooks for scale actions
+  # #######################################################################
+
+  # ScaleUpHook:
+  # Type: AWS::AutoScaling::LifecycleHook
+  # Properties:
+  #   # AutoScalingGroupName:
+  #     #  Ref: AppAutoScalingGroup
+  #  # LifecycleTransition: "autoscaling:EC2_INSTANCE_TERMINATING"
+  #   #HeartbeatTimeout: 200
+  #   #DefaultResult: "CONTINUE"
+  #   #NotificationTargetARN: !Ref SNSTopic
+
+  # #ScaleDownHook:
+  #  # Type: "AWS::AutoScaling::LifecycleHook"
+  #   #Properties:
+  #    # AutoScalingGroupName:
+  #     #  Ref: AppAutoScalingGroup
+  #     #LifecycleTransition: "autoscaling:EC2_INSTANCE_TERMINATING"
+  #     #HeartbeatTimeout: 300
+  #     #DefaultResult: "CONTINUE"
+  #     #NotificationTargetARN: !Ref SNSTopic
+
+
+  #######################################################################
+  # SNS Topic for receiving scaling notificetions
+  #######################################################################
+
+  CriticalSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: "Ali.Raza@nordcloud.com"
+          Protocol: "email"
+
+
+  WarningSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: "Ali.Raza@nordcloud.com"
+          Protocol: "email"
+
+
+  #######################################################################
+  # Cloud Watch Alarms
+  #######################################################################
+  Logs:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      RetentionInDays: !Ref LogsRetentionInDays
+
+  AppHighCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: If CPU usage is more than85% for 10 minutes
+      ComparisonOperator: GreaterThanThreshold
+      MetricName: CPUUtilization
+      Namespace: EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 85
+      AlarmActions: [!Ref AppStepUpScalingPolicy]
+
+  AppLowCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: If CPU usage is Less than 80% for 10 minutes
+      ComparisonOperator: LessThanThreshold
+      MetricName: CPUUtilization
+      Namespace: EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 15
+      AlarmActions: [!Ref AppStepDownScalingPolicy]
+
+  CriticalCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Server CPU Usage High Warning
+      AlarmActions:
+        - !Ref CriticalSNSTopic
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 95
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AppAutoScalingGroup
+          Value: !Ref AppAutoScalingGroup
+
+  # Warning of CPU usage
+  WarningCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Server CPU Usage Warning
+      AlarmActions:
+        - !Ref WarningSNSTopic
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 75
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AppAutoScalingGroup
+          Value: !Ref AppAutoScalingGroup
+
+  StatusCheckFailedAlarm:
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmActions:
+        - !Ref CriticalSNSTopic
+      AlarmDescription: 'EC2 status check or system status check has failed.'
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AppAutoScalingGroup
+          Value: !Ref AppAutoScalingGroup
+      EvaluationPeriods: 1
+      MetricName: StatusCheckFailed
+      Namespace: 'AWS/EC2'
+      OKActions:
+        - !Ref CriticalSNSTopic
+      Period: 600
+      Statistic: Sum
+      Threshold: 0
+      TreatMissingData: notBreaching
+
+  # Disk Used Percent Warning
+  DiskUsedPercentWarning:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Warning Disk Used 85%"
+      AlarmActions:
+        - !Ref WarningSNSTopic
+      MetricName: disk_used_percent
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 85
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: AppAutoScalingGroup
+          Value: !Ref AppAutoScalingGroup
+
+  # Disk Used Percent Critical
+  DiskUsedPercentCritical:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Critical Warning Disk Used 95%"
+      AlarmActions:
+        - !Ref CriticalSNSTopic
+      MetricName: disk_used_percent
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 95
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: AppAutoScalingGroup
+          Value: !Ref AppAutoScalingGroup
+
+  # Memory Used Percent Warning
+  MemoryUsedPercentWarning:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Warning Memory Used 80%"
+      AlarmActions:
+        - !Ref WarningSNSTopic
+      MetricName: mem_used_percent
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: AppAutoScalingGroup
+          Value: !Ref AppAutoScalingGroup
+
+  # Memory Used Percent Critical
+  MemoryUsedPercentCritical:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Critical Warning Memory Used 90%"
+      AlarmActions:
+        - !Ref CriticalSNSTopic
+      MetricName: mem_used_percent
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 90
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: AppAutoScalingGroup
+          Value: !Ref AppAutoScalingGroup
+
+  # Swap Used Percent Warning
+  SwapUsedPercentWarning:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Warning Swap Used 10%"
+      AlarmActions:
+        - !Ref WarningSNSTopic
+      MetricName: swap_used_percent
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: AppAutoScalingGroup
+          Value: !Ref AppAutoScalingGroup
+
+  # Swap Used Percent Critical
+  SwapUsedPercentCritical:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Critical Warning Swap Used 60%"
+      AlarmActions:
+        - !Ref CriticalSNSTopic
+      MetricName: swap_used_percent
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 60
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: AppAutoScalingGroup
+          Value: !Ref AppAutoScalingGroup
+
+  # HealthyHostCount
+  HealthyHostCountAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: “Healthy Host Count”
+      MetricName: HealthyHostCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref AppElasticLoadBalancer
+        - Name: TargetGroup
+          Value: !Ref AppELBTargetGroup
+
+  # UnHealthy Host Count
+  UnHealthyHostCountAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: “UnHealthy Host Count”
+      AlarmActions:
+        - !Ref CriticalSNSTopic
+      MetricName: UnHealthyHostCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref AppElasticLoadBalancer
+        - Name: TargetGroup
+          Value: !Ref AppELBTargetGroup
+
+  # RejectedConnectionCount
+  RejectedConnectionCount:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: “Rejected Connection Count”
+      MetricName: RejectedConnectionCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Sum
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      Period: 60
+      Threshold: 5
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref AppElasticLoadBalancer
+
+  # TargetConnectionErrorCount
+  TargetConnectionErrorCount:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: “Target Connection Error Count”
+      MetricName: TargetConnectionErrorCount
+      Namespace: AWS/ApplicationELB
+      Statistic: Sum
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      Period: 60
+      Threshold: 5
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref AppElasticLoadBalancer
+
+  # TargetResponseTime
+  TargetResponseTime:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: “Target Response Time”
+      MetricName: TargetResponseTime
+      Namespace: AWS/ApplicationELB
+      Statistic: Sum
+      ComparisonOperator: GreaterThanThreshold
+      EvaluationPeriods: 1
+      Period: 60
+      Threshold: 5
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref AppElasticLoadBalancer
+
+  #######################################################################
+  # DNS record pointing to loadbalancer
+  #######################################################################
+  DNSRecord:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneName: team3.nordcloudtap.com.
+      # HostedZoneId:    Z02531488EQS0RZKQU8C
+      RecordSets:
+        - Name: team3.nordcloudtap.com.
+          Type: A
+          AliasTarget:
+            HostedZoneId: !GetAtt AppElasticLoadBalancer.CanonicalHostedZoneID
+            DNSName: !GetAtt AppElasticLoadBalancer.DNSName
+
+  ######################################################################
+  # Outputs of some key resource created above
+  ######################################################################
+
+  InstanceSecurityGroupId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/sg/instance/id"
+      Type: "String"
+      Description: "InstanceSecurityGroupId"
+      Value: !Ref InstanceSecurityGroup
+
+  AppElasticLoadBalancerId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/lb/appelb/id"
+      Type: "String"
+      Description: "AppElasticLoadBalancerId"
+      Value: !Ref AppElasticLoadBalancer
+
+  AppELBTargetGroupId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/lb/apptg/id"
+      Type: "String"
+      Description: "AppELBTargetGroupId"
+      Value: !Ref AppELBTargetGroup
+
+  AppAutoScalingGroupId:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: "/autoscale/asg/id"
+      Type: "String"
+      Description: "AppAutoScalingGroupId"
+      Value: !Ref AppAutoScalingGroup

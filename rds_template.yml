@@ -1,0 +1,189 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Module-E-RDS"
+
+######################################################################
+#  Template contains parameters & resources for creating Multi-AZ MySQL RDS DB.
+#
+#
+#  List of resources created:
+#                           1. Database Subnet Group
+#                           2. Secret for the SQL database
+#                           4. MySQL Database security group
+#                           3. MySQL RDS Database
+#                           5. Read replica instance in different AZ
+#                           6. Database endpoint parameters
+#
+# Implementation resources
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-security-group.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-dbsubnet-group.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-secretsmanager-secret.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-rds-database-instance.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/intrinsic-function-reference.html
+# https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ssm-parameter.html
+#
+######################################################################
+
+Parameters:
+
+  InstanceId:
+    Default: MyInstance
+    Type: String
+    MinLength: '1'
+    MaxLength: '63'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: >-
+      Must begin with a letter and must not end with a hyphen or contain two
+      consecutive hyphens.
+
+  DatabaseName:
+    Default: T3Database
+    Type: String
+    MinLength: '1'
+    MaxLength: '64'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: must begin with a letter, contain alphanumeric chars.
+
+  DatabaseUser:
+    Default: admin
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+    ConstraintDescription: must begin with a letter, contain alphanumeric chars.
+
+  InstanceType:
+    Type: String
+    Default: "db.t2.micro"
+
+  StorageSize:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+    ConstraintDescription: must be between 20 and 100 GiB.
+
+  EngineType:
+    Type: String
+    Default: mysql
+
+  EngineVersion:
+    Type: String
+    Default: 8.0.16
+
+# Multi-Az:
+#   Type: Boolean
+#   Default: "true"
+#   AllowedValues:
+#     - 'true'
+#     - 'false'
+
+
+######################################################################
+# Resource creation
+######################################################################
+
+Resources:
+
+  ######################################################################
+  # Security Group
+  ######################################################################
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "This is a instance security group"
+      VpcId: '{{resolve:ssm:/vpc/id}}'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: '{{resolve:ssm:/sg/instance/id}}'
+
+
+  ######################################################################
+  # Password secret
+  ######################################################################
+  SecretDBKey:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: MySqlSecretForMyDB
+      Description: "This secret has a random generated secret password."
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username": "${DatabaseUser}"}'
+        GenerateStringKey: "password"
+        PasswordLength: 30
+        ExcludeCharacters: '"@/\'
+  # Tags:
+  #     Key: AppName
+  #     Value: MySqlA
+
+  ######################################################################
+  # Data Subnet Group
+  ######################################################################
+  DBSubnetGroup:
+    Type: "AWS::RDS::DBSubnetGroup"
+    Properties:
+      DBSubnetGroupDescription: DB subnet
+      SubnetIds:
+        - '{{resolve:ssm:/vpc/subnet/privatedata/a/id}}'
+        - '{{resolve:ssm:/vpc/subnet/privatedata/b/id}}'
+  # Tags:
+  #   -
+  #     Key: Name
+  #     Value: DB Subnet Group
+  ######################################################################
+  # My Database Encryption Key
+  ######################################################################
+  MyKey:
+    Type: "AWS::KMS::Key"
+    Properties:
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: key-default-1
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Join
+                - ""
+                - - "arn:aws:iam::"
+                  - !Ref "AWS::AccountId"
+                  - ":root"
+            Action: "kms:*"
+            Resource: "*"
+
+  ######################################################################
+  # Database instance
+  ######################################################################
+  DatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Ref InstanceId
+      DBInstanceClass: !Ref InstanceType
+      DBName: !Ref DatabaseName
+      AllocatedStorage: !Ref StorageSize
+      Engine: !Ref EngineType
+      EngineVersion: !Ref EngineVersion
+      # SourceRegion: !Ref  Multi-Az
+      MasterUsername: !Ref DatabaseUser
+      # yamllint disable
+      MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref SecretDBKey, ':SecretString:password}}']]
+      # yamllint enable
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !GetAtt DatabaseSecurityGroup.GroupId
+  ######################################################################
+  # Database Endpoint parameters
+  ######################################################################
+  DBEndpoint:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: "/DBEndpoint/id"
+      Type: "String"
+      Description: VPC Id
+      Value: !GetAtt DatabaseInstance.Endpoint.Address
+
+Outputs:
+  InstanceId:
+    Description: InstanceId of the newly created RDS Instance
+    Value: MyDBSmall
